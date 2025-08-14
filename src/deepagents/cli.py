@@ -3,6 +3,7 @@ import sys
 from enum import Enum
 import typer
 from typing import Optional
+from dotenv import load_dotenv, find_dotenv
 
 from deepagents import create_deep_agent
 try:
@@ -12,6 +13,15 @@ except Exception as e:
 
 
 app = typer.Typer(help="DeepAgents CLI")
+
+# Load environment variables from a .env file if present
+try:
+    _dotenv_path = find_dotenv(usecwd=True)
+    if _dotenv_path:
+        load_dotenv(_dotenv_path)
+except Exception:
+    # Don't block CLI if dotenv loading fails; explicit exports still work
+    pass
 
 
 class Topic(str, Enum):
