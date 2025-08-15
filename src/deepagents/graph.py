@@ -1,12 +1,19 @@
 from deepagents.sub_agent import _create_task_tool, SubAgent
+import os
 from deepagents.model import get_default_model
 from deepagents.tools import write_todos, write_file, read_file, ls, edit_file
 from deepagents.state import DeepAgentState
-from deepagents.tracing import initialize_tracing, log_agent_invocation, configure_agent_metadata
+from deepagents.tracing import (
+    initialize_tracing,
+    log_agent_invocation,
+    configure_agent_metadata,
+    get_tracing_callback_handler,
+)
 from typing import Sequence, Union, Callable, Any, TypeVar, Type, Optional
 from langchain_core.tools import BaseTool
 from langchain_core.language_models import LanguageModelLike
 import uuid
+from datetime import datetime
 
 from langgraph.prebuilt import create_react_agent
 
@@ -69,7 +76,13 @@ def create_deep_agent(
     if enable_tracing:
         log_agent_invocation(agent_id, "main-agent")
     
-    prompt = instructions + base_prompt
+    # Compute current datetime and inject into prompt so the model knows "now".
+    now_human = datetime.now().astimezone().strftime("%Y-%m-%d %H:%M %Z")
+    date_prefix = (
+        f"You must treat the current local date/time as: {now_human}. "
+        "Use the most recent, reliable information available.\n\n"
+    )
+    prompt = date_prefix + instructions + base_prompt
     built_in_tools = [write_todos, write_file, read_file, ls, edit_file]
     if model is None:
         model = get_default_model()
@@ -94,6 +107,22 @@ def create_deep_agent(
     if enable_tracing:
         metadata = configure_agent_metadata(agent_id)
         metadata["agent.type"] = "main-agent"
-        agent = agent.with_config(metadata=metadata)
+        # Add current datetime to tracing metadata for visibility in Arize
+        metadata["context.current_datetime"] = datetime.now().astimezone().isoformat()
+        # Propagate run/session IDs if present (set by dump runner)
+        try:
+            run_id = os.getenv("DEEPAGENTS_RUN_ID")
+            session_id = os.getenv("DEEPAGENTS_SESSION_ID")
+            if run_id:
+                metadata["run.id"] = run_id
+            if session_id:
+                metadata["session.id"] = session_id
+        except Exception:
+            pass
+        # Attach metadata and callbacks for OTEL enrichment (tokens/cost/errors)
+        agent = agent.with_config(
+            metadata=metadata,
+            callbacks=[get_tracing_callback_handler()],
+        )
 
     return agent

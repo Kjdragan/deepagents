@@ -95,6 +95,44 @@ tail -f outputs/*__events.jsonl
 - No outputs are written by the dump runner: nothing streamed yet; verify network/API access, keys, or rerun.
 - Default model: `Claude Sonnet 4` (`claude-sonnet-4-20250514`). Use `--model` or `--model-name` to override.
 
+## Development Mode Limits (for faster, cheaper demos)
+To constrain research breadth and LangGraph runtime during development, set the following environment variables (read by `examples/research/research_agent.py`):
+
+```env
+# Enable conservative defaults (on/off)
+DEEPAGENTS_DEV_MODE=1
+
+# Cap the number of graph steps (recursion limit)
+DEEPAGENTS_MAX_STEPS=30     # default 30 when DEV_MODE=1, 1000 otherwise
+
+# Cap per-search result count (Tavily)
+DEEPAGENTS_MAX_SEARCH_RESULTS=3  # default 3 when DEV_MODE=1, 5 otherwise
+```
+
+- These values are also attached to trace metadata as `limits.max_steps`, `limits.max_search_results`, and `dev_mode`.
+- To disable limits and return to full-depth runs, unset the variables or set `DEEPAGENTS_DEV_MODE=0` (and remove any explicit caps).
+
+Examples:
+```bash
+# One-off dev-mode run (dump runner)
+DEEPAGENTS_DEV_MODE=1 DEEPAGENTS_MAX_STEPS=25 DEEPAGENTS_MAX_SEARCH_RESULTS=2 \
+  uv run --env-file .env python examples/research/dump_run.py "Your question here"
+
+# Disable limits (production-like)
+DEEPAGENTS_DEV_MODE=0 \
+  uv run --env-file .env python examples/research/dump_run.py "Your question here"
+```
+
+## Optional: Cost Estimation in Traces
+If you want span attributes to include an estimated cost (USD), set per-1K-token prices via env vars. The tracer will compute `llm.cost_usd` from token usage when available:
+
+```env
+LLM_PRICE_INPUT_PER_1K=3.00
+LLM_PRICE_OUTPUT_PER_1K=15.00
+```
+
+- If these are unset or zero, no cost is computed. Token usage (`llm.input_tokens`, `llm.output_tokens`, `llm.total_tokens`) and errors are captured automatically in spans when tracing is enabled.
+
 ## Key Files
 - CLI: `src/deepagents/cli.py`
 - Default model: `src/deepagents/model.py`

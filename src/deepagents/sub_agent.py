@@ -1,9 +1,11 @@
 from deepagents.prompts import TASK_DESCRIPTION_PREFIX, TASK_DESCRIPTION_SUFFIX
+import os
 from deepagents.state import DeepAgentState
-from deepagents.tracing import log_agent_invocation, configure_agent_metadata
+from deepagents.tracing import log_agent_invocation, configure_agent_metadata, get_tracing_callback_handler
 from langgraph.prebuilt import create_react_agent
 from langchain_core.tools import BaseTool
 from typing import TypedDict, Optional
+from datetime import datetime
 from langchain_core.tools import tool, InjectedToolCallId
 from langchain_core.messages import ToolMessage
 from typing import Annotated, NotRequired
@@ -21,8 +23,17 @@ class SubAgent(TypedDict):
 
 
 def _create_task_tool(tools, instructions, subagents: list[SubAgent], model, state_schema, parent_agent_id: Optional[str] = None):
+    # Compute current datetime and prepend to sub-agent prompts
+    now_human = datetime.now().astimezone().strftime("%Y-%m-%d %H:%M %Z")
+    date_prefix = (
+        f"You must treat the current local date/time as: {now_human}. "
+        "Use the most recent, reliable information available.\n\n"
+    )
+
     agents = {
-        "general-purpose": create_react_agent(model, prompt=instructions, tools=tools)
+        "general-purpose": create_react_agent(
+            model, prompt=date_prefix + instructions, tools=tools
+        )
     }
     tools_by_name = {}
     for tool_ in tools:
@@ -35,7 +46,10 @@ def _create_task_tool(tools, instructions, subagents: list[SubAgent], model, sta
         else:
             _tools = tools
         agents[_agent["name"]] = create_react_agent(
-            model, prompt=_agent["prompt"], tools=_tools, state_schema=state_schema
+            model,
+            prompt=date_prefix + _agent["prompt"],
+            tools=_tools,
+            state_schema=state_schema,
         )
 
     other_agents_string = [
@@ -66,8 +80,26 @@ def _create_task_tool(tools, instructions, subagents: list[SubAgent], model, sta
         # Attach tracing metadata so Arize can visualize this sub-agent under its parent
         metadata = configure_agent_metadata(sub_agent_id, parent_agent_id)
         metadata["agent.type"] = subagent_type
+        # Add current datetime into metadata for tracing visibility
         try:
-            sub_agent = sub_agent.with_config(metadata=metadata)
+            metadata["context.current_datetime"] = datetime.now().astimezone().isoformat()
+        except Exception:
+            pass
+        # Include run/session IDs if provided by the dump runner
+        try:
+            run_id = os.getenv("DEEPAGENTS_RUN_ID")
+            session_id = os.getenv("DEEPAGENTS_SESSION_ID")
+            if run_id:
+                metadata["run.id"] = run_id
+            if session_id:
+                metadata["session.id"] = session_id
+        except Exception:
+            pass
+        try:
+            sub_agent = sub_agent.with_config(
+                metadata=metadata,
+                callbacks=[get_tracing_callback_handler()],
+            )
         except Exception:
             # If the runnable doesn't support with_config, proceed without metadata
             pass

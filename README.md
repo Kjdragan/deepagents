@@ -1,5 +1,7 @@
 # 🧠🤖Deep Agents
 
+[![Research Evals](https://github.com/Kjdragan/deepagents/actions/workflows/research-evals.yml/badge.svg)](https://github.com/Kjdragan/deepagents/actions/workflows/research-evals.yml)
+
 Using an LLM to call tools in a loop is the simplest form of an agent. 
 This architecture, however, can yield agents that are “shallow” and fail to plan and act over longer, more complex tasks. 
 Applications like “Deep Research”, "Manus", and “Claude Code” have gotten around this limitation by implementing a combination of four things:
@@ -229,6 +231,25 @@ async def main():
             chunk["messages"][-1].pretty_print()
 
 asyncio.run(main())
+```
+
+## Monitoring & Evals
+
+DeepAgents now ships with Phoenix/Arize dashboards and automated evaluation runs.
+
+- Read the end-to-end guide: `src/Project Documentation/Phoenix_Dashboards_and_CI_Evals.md`
+- Dashboard recipes and saved views: `docs/phoenix_dashboards.md`
+- CI workflow: `.github/workflows/research-evals.yml` (triggers on push of `outputs/run_state_*.json`)
+
+Quick start (local):
+```bash
+# Optional: group runs
+export DEEPAGENTS_SESSION_ID=my-session-001
+# Optional: auto-run evals after dump
+export DEEPAGENTS_RUN_EVALS=1
+export DEEPAGENTS_EVAL_MODEL=gpt-4o-mini
+
+uv run python examples/research/dump_run.py "Your research question"
 ```
 
 ## Roadmap

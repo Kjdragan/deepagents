@@ -5,6 +5,7 @@ import asyncio
 import traceback
 from pprint import pformat
 from datetime import datetime
+import uuid
 from pathlib import Path
 from typing import Any
 
@@ -79,6 +80,12 @@ def run_and_dump(question: str) -> Path:
     outputs_dir.mkdir(parents=True, exist_ok=True)
 
     ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+    # Generate identifiers for tracing/dashboards
+    session_id = os.getenv("DEEPAGENTS_SESSION_ID") or f"sess-{uuid.uuid4().hex[:8]}"
+    run_id = f"run-{ts}-{uuid.uuid4().hex[:6]}"
+    # Export identifiers so downstream sub-agents can inherit via env
+    os.environ.setdefault("DEEPAGENTS_SESSION_ID", session_id)
+    os.environ["DEEPAGENTS_RUN_ID"] = run_id
 
     # Stream the agent to capture intermediate states and the final state
     events_path = outputs_dir / f"{ts}__events.jsonl"
@@ -86,29 +93,58 @@ def run_and_dump(question: str) -> Path:
 
     async def _astream_collect():
         nonlocal last_state
-        async for chunk in agent.astream(
-            {"messages": [{"role": "user", "content": question}]},
-            stream_mode="values",
-        ):
-            # Persist each chunk as a JSON line for step-by-step insight
+        try:
+            # Attach run/session metadata so Phoenix dashboards can filter by run
+            run_agent = agent.with_config({
+                "metadata": {
+                    "run.id": run_id,
+                    "session.id": session_id,
+                }
+            })
+            async for chunk in run_agent.astream(
+                {"messages": [{"role": "user", "content": question}]},
+                stream_mode="values",
+            ):
+                # Persist each chunk as a JSON line for step-by-step insight
+                try:
+                    with events_path.open("a", encoding="utf-8") as ef:
+                        ef.write(json.dumps(_jsonable(chunk), ensure_ascii=False) + "\n")
+                except Exception:
+                    pass
+                last_state = chunk
+        except Exception as e:
+            # Record terminal error and proceed with whatever last_state we have
             try:
                 with events_path.open("a", encoding="utf-8") as ef:
-                    ef.write(json.dumps(_jsonable(chunk), ensure_ascii=False) + "\n")
+                    ef.write(json.dumps({
+                        "event": "astream_error",
+                        "error": str(e),
+                        "type": e.__class__.__name__,
+                    }) + "\n")
             except Exception:
                 pass
-            last_state = chunk
 
     # Run the async streaming collection
     try:
         asyncio.run(_astream_collect())
-    except RuntimeError:
-        # In case an event loop is already running (e.g., in notebooks), fall back
-        loop = asyncio.get_event_loop()
+    except RuntimeError as e:
+        # Handle environments with an existing or missing event loop
+        try:
+            loop = asyncio.get_event_loop()
+        except RuntimeError:
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
         loop.run_until_complete(_astream_collect())
 
     # Use the last streamed state as the result; if none, fallback to single invoke
     if last_state is None:
-        result = agent.invoke({
+        run_agent = agent.with_config({
+            "metadata": {
+                "run.id": run_id,
+                "session.id": session_id,
+            }
+        })
+        result = run_agent.invoke({
             "messages": [{"role": "user", "content": question}],
         })
     else:
@@ -176,6 +212,25 @@ def run_and_dump(question: str) -> Path:
             report_path = outputs_dir / f"{ts}__report.md"
             with report_path.open("w", encoding="utf-8") as f:
                 f.write(str(final_msg))
+
+    # Optionally run evals immediately after dump if enabled via env flag
+    try:
+        if os.getenv("DEEPAGENTS_RUN_EVALS", "0").lower() in ("1", "true", "yes", "on"):
+            import importlib.util as _il
+            _eval_path = (Path(__file__).resolve().parent / "eval_run.py").as_posix()
+            _espec = _il.spec_from_file_location("_eval_run", _eval_path)
+            if _espec and _espec.loader:
+                _emod = _il.module_from_spec(_espec)
+                _espec.loader.exec_module(_emod)  # type: ignore[arg-type]
+                compiled = _emod.compile_runs(outputs_dir)
+                _emod.maybe_run_evals(
+                    outputs_dir,
+                    compiled,
+                    os.getenv("DEEPAGENTS_EVAL_MODEL", "gpt-4o-mini"),
+                )
+    except Exception:
+        # Do not fail the main run if evals fail
+        pass
 
     return state_path
 

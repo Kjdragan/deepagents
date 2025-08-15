@@ -1,4 +1,5 @@
 import os
+from datetime import datetime
 from typing import Literal
 
 from tavily import TavilyClient
@@ -6,20 +7,30 @@ from tavily import TavilyClient
 
 from deepagents import create_deep_agent, SubAgent
  
+# Dev-mode knobs (documented in docs):
+# - DEEPAGENTS_DEV_MODE: when "1"/"true", enable conservative defaults.
+# - DEEPAGENTS_MAX_STEPS: recursion limit for the agent graph (int).
+# - DEEPAGENTS_MAX_SEARCH_RESULTS: cap per-search results (int).
+_DEV_MODE = os.getenv("DEEPAGENTS_DEV_MODE", "0").lower() in ("1", "true", "yes", "on")
+_MAX_STEPS = int(os.getenv("DEEPAGENTS_MAX_STEPS", str(30 if _DEV_MODE else 1000)))
+_MAX_SEARCH_RESULTS = int(os.getenv("DEEPAGENTS_MAX_SEARCH_RESULTS", str(3 if _DEV_MODE else 5)))
+
 # It's best practice to initialize the client once and reuse it.
 tavily_client = TavilyClient(api_key=os.environ["TAVILY_API_KEY"])
 
 # Search tool to use to do research
 def internet_search(
     query: str,
-    max_results: int = 5,
+    max_results: int = _MAX_SEARCH_RESULTS,
     topic: Literal["general", "news", "finance"] = "general",
     include_raw_content: bool = False,
 ):
     """Run a web search"""
+    # Enforce a hard cap regardless of the passed value (defensive)
+    eff_max = min(max_results, _MAX_SEARCH_RESULTS)
     search_docs = tavily_client.search(
         query,
-        max_results=max_results,
+        max_results=eff_max,
         include_raw_content=include_raw_content,
         topic=topic,
     )
@@ -159,8 +170,20 @@ Use this to run an internet search for a given query. You can specify the number
 """
 
 # Create the agent
-agent = create_deep_agent(
+_agent = create_deep_agent(
     [internet_search],
     research_instructions,
     subagents=[critique_sub_agent, research_sub_agent],
-).with_config({"recursion_limit": 1000})
+)
+
+# Apply recursion limit and attach limits as metadata for tracing visibility
+agent = _agent.with_config({
+    "recursion_limit": _MAX_STEPS,
+    "metadata": {
+        "limits.max_steps": _MAX_STEPS,
+        "limits.max_search_results": _MAX_SEARCH_RESULTS,
+        "dev_mode": _DEV_MODE,
+        # Ensure current datetime is recorded even if metadata is overridden here
+        "context.current_datetime": datetime.now().astimezone().isoformat(),
+    },
+})

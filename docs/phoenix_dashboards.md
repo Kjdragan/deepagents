@@ -18,22 +18,18 @@ Links:
 - Optional quick link: `get_arize_dashboard_url(project_name)` in `src/deepagents/tracing.py`.
 
 ## Span attributes to emit (for better filtering/aggregation)
-Today we emit `graph.node.id` (+ optional `graph.node.parent_id`). For richer dashboards, add these attributes to spans (model, tool, and agent spans). These can be attached via LangChain run metadata and picked up by OpenInference.
+These attributes are attached to agent and LLM/tool spans via `with_config(metadata=...)` and the OTEL callback in `src/deepagents/tracing.py`.
 
-- `graph.node.id` (string) — required. e.g., `agent-1234`, `subagent-research-5678`.
-- `graph.node.parent_id` (string) — optional for sub-agents.
-- `agent.type` (string) — `main-agent`, `research-agent`, `critique-agent`, etc.
-- `tool.name` (string) — for tool spans.
-- `run.id` (string) — stable per invocation; use UUID.
-- `session.id` (string) — group related runs, e.g., CLI session.
-- `model.name` (string), `model.provider` (string), `model.temperature` (number).
-- `latency.ms` (number) — auto-captured for LLM/tool spans.
-- `tokens.prompt` (number), `tokens.completion` (number), `tokens.total` (number). If available.
-- `cost.usd` (number) — if a cost calculator is added.
-- `error.type` (string), `error.message` (string) — when exceptions occur.
-- `prompt.version` (string) — if you version prompts in `src/deepagents/prompts.py`.
+- `graph.node.id` (string) — e.g., `agent-<id>`, `subagent-<type>-<id>`.
+- `graph.node.parent_id` (string) — set for sub-agents.
+- `agent.type` (string) — `main-agent`, specific sub-agent name, etc.
+- `run.id` (string) — per invocation (set by `examples/research/dump_run.py`).
+- `session.id` (string) — groups multiple runs in a session.
+- `llm.input_tokens`, `llm.output_tokens`, `llm.total_tokens` — populated from model usage when available.
+- `llm.cost_usd` — computed from `.env` pricing variables if provided.
+- `error.type`, `error.message` — set on error spans.
 
-Note: Implementing the bolded items can be done incrementally in `graph.py`/`sub_agent.py` by passing `metadata` on LC calls and/or using callbacks. See "Implementing Agent Metadata" docs above. (Tracked in TODO t7.)
+Already implemented in code: `graph.node.id`, `graph.node.parent_id`, `agent.type`, `run.id`, `session.id`, token counters, and `llm.cost_usd`.
 
 ## Dashboard 1: Run Overview
 - Filters (default):
@@ -76,6 +72,16 @@ Note: Implementing the bolded items can be done incrementally in `graph.py`/`sub
   - Timeseries: Tokens per request (prompt vs completion stacked).
   - Table: Most expensive runs (top `run.id` by cost, with filters to drill down).
 
+## Curated Saved Views (Filters you can save and share)
+- `agent.type = main-agent` (time range: last 24h)
+- `agent.type = research-agent` (time range: last 7d)
+- `graph.node.parent_id != null` (sub-agent spans only)
+- `llm.cost_usd > 0.50` (high-cost runs)
+- `llm.total_tokens > 20000` (token-heavy runs)
+- `error.type != null` (errored traces)
+- `run.id = <paste from outputs filename>` (deep dive a single run)
+- `session.id = <your session>` (group of related runs)
+
 ## Saved Views (Filters)
 - `agent.type = main-agent`
 - `agent.type = research-agent`
@@ -88,6 +94,23 @@ Note: Implementing the bolded items can be done incrementally in `graph.py`/`sub
 2. Add timeseries/distribution/table widgets per above using attributes as dimensions.
 3. Save default filters; create Saved Views for common filters.
 4. Share dashboard link with team. Optionally wire monitors/alerts in Arize.
+
+### Sharing direct links
+- Apply your filters and time range, then use "Save view" (or equivalent) in the dashboard UI.
+- Copy the browser URL; Arize preserves filters and the saved view in the link.
+- Tip: include `run.id` or `session.id` filters before copying to share a stable investigation link.
+
+### Saved View URLs (paste-ready for your team)
+Paste the saved-view URLs you create in Arize below, so the team can access them quickly:
+
+- Main Agent (last 24h): <PASTE_URL_HERE>
+- Research Agent (last 7d): <PASTE_URL_HERE>
+- Sub-agent spans only (`graph.node.parent_id != null`): <PASTE_URL_HERE>
+- High-cost runs (`llm.cost_usd > 0.50`): <PASTE_URL_HERE>
+- High-token runs (`llm.total_tokens > 20000`): <PASTE_URL_HERE>
+- Errors only (`error.type != null`): <PASTE_URL_HERE>
+- Single run (filter by `run.id = …`): <PASTE_URL_HERE>
+- Session view (filter by `session.id = …`): <PASTE_URL_HERE>
 
 ## Next Steps
 - Implement additional span attributes in code (TODO t7).

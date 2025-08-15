@@ -1,0 +1,52 @@
+name: Research Evals
+
+on:
+  push:
+    paths:
+      - 'outputs/run_state_*.json'
+      - '.github/workflows/research-evals.yml'
+
+jobs:
+  evals:
+    name: Compile and Run Evals
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      actions: write
+      id-token: write
+    env:
+      PYTHONUNBUFFERED: '1'
+      EVALUATOR_MODEL: gpt-4o-mini
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install .
+          pip install pandas arize-phoenix
+
+      - name: Compile runs
+        run: |
+          python examples/research/eval_run.py --outputs-dir outputs
+
+      - name: Run evals (Phoenix LLM-as-a-Judge)
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+        run: |
+          python examples/research/eval_run.py --outputs-dir outputs --run-evals --evaluator-model "$EVALUATOR_MODEL"
+
+      - name: Upload eval artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: research-evals-${{ github.run_id }}
+          path: |
+            outputs/compiled_runs.csv
+            outputs/eval_results.csv
+          if-no-files-found: warn

@@ -89,6 +89,11 @@ jq '.summary' outputs/run_state_*.json | head -n 1
 tail -f outputs/*__events.jsonl
 ```
 
+## Monitoring & Evals
+- End-to-end guide: `src/Project Documentation/Phoenix_Dashboards_and_CI_Evals.md`
+- Dashboard recipes and saved views: `docs/phoenix_dashboards.md`
+- CI workflow: `.github/workflows/research-evals.yml`
+
 ## Troubleshooting
 - Missing API keys: the CLI will exit and indicate which environment variable is missing.
 - `.env` not loading: ensure the file is at the repo root; the CLI attempts `find_dotenv(usecwd=True)`.

@@ -8,11 +8,132 @@ import os
 import logging
 from typing import Optional
 from openinference.instrumentation.langchain import LangChainInstrumentor
+from opentelemetry import trace
+from langchain_core.callbacks.base import BaseCallbackHandler
+from langchain_core.outputs import LLMResult
 import arize.otel
 
 logger = logging.getLogger(__name__)
 
 _tracing_initialized = False
+_callback_handler_singleton: Optional["_OTelSpanEnricher"] = None
+
+
+class _OTelSpanEnricher(BaseCallbackHandler):
+    """LangChain callback that enriches the current OTEL span with useful attributes.
+
+    Records token usage if provided by the LLM and annotates errors on failure.
+    """
+
+    def _set_attr(self, key: str, value):
+        try:
+            span = trace.get_current_span()
+            if span is not None:
+                span.set_attribute(key, value)
+        except Exception:
+            pass
+
+    def _maybe_cost(self, input_tokens: Optional[int], output_tokens: Optional[int]):
+        """Optionally compute cost if pricing env vars are provided.
+
+        Env vars:
+        - LLM_PRICE_INPUT_PER_1K
+        - LLM_PRICE_OUTPUT_PER_1K
+        """
+        try:
+            pin = float(os.getenv("LLM_PRICE_INPUT_PER_1K", "0") or 0)
+            pout = float(os.getenv("LLM_PRICE_OUTPUT_PER_1K", "0") or 0)
+            if pin == 0 and pout == 0:
+                return None
+            cost = 0.0
+            if input_tokens:
+                cost += (input_tokens / 1000.0) * pin
+            if output_tokens:
+                cost += (output_tokens / 1000.0) * pout
+            return round(cost, 6)
+        except Exception:
+            return None
+
+    # LLM success path
+    def on_llm_end(self, response: LLMResult, **kwargs) -> None:
+        try:
+            # Attach run/session IDs if available (ensures grouping in dashboards)
+            try:
+                run_id = os.getenv("DEEPAGENTS_RUN_ID")
+                session_id = os.getenv("DEEPAGENTS_SESSION_ID")
+                if run_id:
+                    self._set_attr("run.id", run_id)
+                if session_id:
+                    self._set_attr("session.id", session_id)
+            except Exception:
+                pass
+
+            usage = {}
+            if response.llm_output and isinstance(response.llm_output, dict):
+                usage = response.llm_output.get("token_usage") or response.llm_output.get("usage") or {}
+            # Fallback: look into generation info
+            if not usage and response.generations:
+                gi = response.generations[0][0].generation_info or {}
+                usage = gi.get("token_usage") or gi.get("usage") or {}
+
+            input_tokens = usage.get("prompt_tokens") or usage.get("input_tokens")
+            output_tokens = usage.get("completion_tokens") or usage.get("output_tokens")
+            total_tokens = usage.get("total_tokens")
+            if total_tokens is None and (input_tokens is not None or output_tokens is not None):
+                total_tokens = (input_tokens or 0) + (output_tokens or 0)
+
+            if input_tokens is not None:
+                self._set_attr("llm.input_tokens", int(input_tokens))
+            if output_tokens is not None:
+                self._set_attr("llm.output_tokens", int(output_tokens))
+            if total_tokens is not None:
+                self._set_attr("llm.total_tokens", int(total_tokens))
+
+            cost = self._maybe_cost(input_tokens, output_tokens)
+            if cost is not None:
+                self._set_attr("llm.cost_usd", cost)
+        except Exception:
+            # Never fail the run because of telemetry
+            pass
+
+    # Error paths
+    def on_llm_error(self, error: BaseException, **kwargs) -> None:
+        try:
+            span = trace.get_current_span()
+            if span is not None:
+                span.set_attribute("error", True)
+                span.set_attribute("error.type", error.__class__.__name__)
+                span.set_attribute("error.message", str(error)[:512])
+                # Ensure run/session context present on error spans
+                try:
+                    run_id = os.getenv("DEEPAGENTS_RUN_ID")
+                    session_id = os.getenv("DEEPAGENTS_SESSION_ID")
+                    if run_id:
+                        span.set_attribute("run.id", run_id)
+                    if session_id:
+                        span.set_attribute("session.id", session_id)
+                except Exception:
+                    pass
+                try:
+                    span.record_exception(error)
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
+    def on_chain_error(self, error: BaseException, **kwargs) -> None:
+        self.on_llm_error(error, **kwargs)
+
+    def on_tool_error(self, error: BaseException, **kwargs) -> None:
+        self.on_llm_error(error, **kwargs)
+
+
+def get_tracing_callback_handler() -> BaseCallbackHandler:
+    """Return a singleton callback handler for enriching spans with usage and errors."""
+    global _callback_handler_singleton
+    if _callback_handler_singleton is None:
+        _callback_handler_singleton = _OTelSpanEnricher()
+    return _callback_handler_singleton
 
 def initialize_tracing(
     project_name: str = "deepagents",
