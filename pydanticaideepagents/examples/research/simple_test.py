@@ -7,6 +7,19 @@ external API keys, making it suitable for quick verification.
 import sys
 import os
 
+# Load environment variables from parent directory
+try:
+    from dotenv import load_dotenv
+    # Go up three levels: simple_test.py -> research -> examples -> pydanticaideepagents -> deepagents
+    parent_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
+    env_path = os.path.join(parent_dir, '.env')
+    load_dotenv(env_path)
+    print(f"✅ Loaded environment variables from {env_path}")
+except ImportError:
+    print("⚠️  python-dotenv not available, environment variables must be set manually")
+except Exception as e:
+    print(f"⚠️  Could not load .env file: {e}")
+
 # Add the src directory to the path
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '../../src'))
 
@@ -81,6 +94,8 @@ Always use the todo planning tool to organize your work."""
         
     except Exception as e:
         print(f"❌ Error during execution: {str(e)}")
+        import traceback
+        traceback.print_exc()
         print("\nThis might be due to missing environment variables:")
         print("- ANTHROPIC_API_KEY (required for Claude model)")
         return False
@@ -145,6 +160,8 @@ if __name__ == "__main__":
         print("\n⏹️  Tests interrupted by user")
     except Exception as e:
         print(f"\n💥 Unexpected error: {str(e)}")
+        import traceback
+        traceback.print_exc()
         success = False
     
     exit(0 if success else 1)

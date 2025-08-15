@@ -15,11 +15,13 @@ from .todo_manager import TodoManager, Todo
 # Conditionally import components that require pydantic_ai
 try:
     from pydantic_ai.models import Model
+    from pydantic_ai.models.anthropic import AnthropicModel
     from .deep_agent import DeepAgent, SubAgentConfig
     _PYDANTIC_AI_AVAILABLE = True
 except ImportError:
     _PYDANTIC_AI_AVAILABLE = False
     Model = None
+    AnthropicModel = None
     DeepAgent = None
     SubAgentConfig = None
 

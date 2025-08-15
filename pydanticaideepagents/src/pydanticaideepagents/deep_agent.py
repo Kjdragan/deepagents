@@ -9,17 +9,12 @@ from typing import List, Dict, Any, Optional, Callable, Union
 from datetime import datetime
 import uuid
 from pydantic_ai import Agent, RunContext
-from pydantic_ai.models import AnthropicModel, Model
+from pydantic_ai.models.anthropic import AnthropicModel
+from pydantic_ai.models import Model
 from dataclasses import dataclass
 
 from .dependencies import DeepAgentDependencies
-from .tools import (
-    ls_tool, 
-    read_file_tool, 
-    write_file_tool, 
-    edit_file_tool, 
-    write_todos_tool
-)
+from .todo_manager import Todo
 
 
 @dataclass
@@ -135,27 +130,66 @@ It is critical that you mark todos as completed as soon as you are done with a t
     def _create_agent(self) -> Agent[DeepAgentDependencies, str]:
         """Create the main Pydantic AI agent with all tools."""
         
-        # Create agent with dynamic system prompt
+        # Create agent first
         agent = Agent(
             self.model,
             deps_type=DeepAgentDependencies,
-            system_prompt=self._get_dynamic_system_prompt,
+            tools=self.tools  # Add user tools via constructor
         )
         
-        # Register built-in tools
-        agent.tool(ls_tool)
-        agent.tool(read_file_tool)
-        agent.tool(write_file_tool)
-        agent.tool(edit_file_tool) 
-        agent.tool(write_todos_tool)
+        # Add dynamic system prompt using decorator
+        @agent.system_prompt
+        def get_system_prompt(ctx: RunContext[DeepAgentDependencies]) -> str:
+            return self._get_dynamic_system_prompt(ctx)
         
-        # Register additional tools
-        for tool in self.tools:
-            agent.tool(tool)
+        # Register built-in tools using decorators
+        @agent.tool
+        def ls(ctx: RunContext[DeepAgentDependencies]) -> list[str]:
+            """List all files in the mock filesystem."""
+            return ctx.deps.get_file_system().ls()
         
-        # Register task tool for sub-agents if subagents exist
+        @agent.tool
+        def read_file(
+            ctx: RunContext[DeepAgentDependencies],
+            file_path: str,
+            offset: int = 0,
+            limit: int = 2000
+        ) -> str:
+            """Read file from the mock filesystem."""
+            return ctx.deps.get_file_system().read_file(file_path, offset, limit)
+        
+        @agent.tool
+        def write_file(
+            ctx: RunContext[DeepAgentDependencies],
+            file_path: str,
+            content: str
+        ) -> str:
+            """Write content to a file in the mock filesystem."""
+            return ctx.deps.get_file_system().write_file(file_path, content)
+        
+        @agent.tool
+        def edit_file(
+            ctx: RunContext[DeepAgentDependencies],
+            file_path: str,
+            old_string: str,
+            new_string: str,
+            replace_all: bool = False
+        ) -> str:
+            """Edit a file in the mock filesystem."""
+            return ctx.deps.get_file_system().edit_file(file_path, old_string, new_string, replace_all)
+        
+        @agent.tool
+        def write_todos(
+            ctx: RunContext[DeepAgentDependencies],
+            todos: List[Todo]
+        ) -> str:
+            """Update the todo list for task management."""
+            return ctx.deps.get_todo_manager().write_todos(todos)
+        
+        # Add task tool for sub-agents if needed
         if self.subagents:
-            agent.tool(self._create_task_tool())
+            task_tool_func = self._create_task_tool()
+            agent.tool(task_tool_func)
         
         return agent
     
@@ -167,62 +201,125 @@ It is critical that you mark todos as completed as soon as you are done with a t
         general_agent = Agent(
             self.model,
             deps_type=DeepAgentDependencies,
-            system_prompt=lambda ctx: self._get_dynamic_system_prompt(ctx)
+            tools=self.tools  # Add user tools via constructor
         )
         
-        # Register tools for general-purpose agent
-        general_agent.tool(ls_tool)
-        general_agent.tool(read_file_tool)
-        general_agent.tool(write_file_tool)
-        general_agent.tool(edit_file_tool)
-        general_agent.tool(write_todos_tool)
-        for tool in self.tools:
-            general_agent.tool(tool)
+        # Add built-in tools using decorators for general agent
+        @general_agent.tool
+        def ls(ctx: RunContext[DeepAgentDependencies]) -> list[str]:
+            """List all files in the mock filesystem."""
+            return ctx.deps.get_file_system().ls()
+        
+        @general_agent.tool
+        def read_file(
+            ctx: RunContext[DeepAgentDependencies],
+            file_path: str,
+            offset: int = 0,
+            limit: int = 2000
+        ) -> str:
+            """Read file from the mock filesystem."""
+            return ctx.deps.get_file_system().read_file(file_path, offset, limit)
+        
+        @general_agent.tool
+        def write_file(
+            ctx: RunContext[DeepAgentDependencies],
+            file_path: str,
+            content: str
+        ) -> str:
+            """Write content to a file in the mock filesystem."""
+            return ctx.deps.get_file_system().write_file(file_path, content)
+        
+        @general_agent.tool
+        def edit_file(
+            ctx: RunContext[DeepAgentDependencies],
+            file_path: str,
+            old_string: str,
+            new_string: str,
+            replace_all: bool = False
+        ) -> str:
+            """Edit a file in the mock filesystem."""
+            return ctx.deps.get_file_system().edit_file(file_path, old_string, new_string, replace_all)
+        
+        @general_agent.tool
+        def write_todos(
+            ctx: RunContext[DeepAgentDependencies],
+            todos: List[Todo]
+        ) -> str:
+            """Update the todo list for task management."""
+            return ctx.deps.get_todo_manager().write_todos(todos)
+        
+        # Add dynamic system prompt for general agent
+        @general_agent.system_prompt  
+        def get_general_system_prompt(ctx: RunContext[DeepAgentDependencies]) -> str:
+            return self._get_dynamic_system_prompt(ctx)
         
         sub_agents["general-purpose"] = general_agent
         
         # Create custom sub-agents
         for subagent_config in self.subagents:
-            def make_subagent_prompt(config):
-                def subagent_prompt(ctx: RunContext[DeepAgentDependencies]) -> str:
+            subagent = Agent(
+                self.model,
+                deps_type=DeepAgentDependencies,
+                tools=self.tools  # Add user tools via constructor
+            )
+            
+            # Add built-in tools using decorators for each sub-agent
+            # Note: We add all tools for now - tool filtering can be added later if needed
+            @subagent.tool
+            def ls_sub(ctx: RunContext[DeepAgentDependencies]) -> list[str]:
+                """List all files in the mock filesystem."""
+                return ctx.deps.get_file_system().ls()
+            
+            @subagent.tool
+            def read_file_sub(
+                ctx: RunContext[DeepAgentDependencies],
+                file_path: str,
+                offset: int = 0,
+                limit: int = 2000
+            ) -> str:
+                """Read file from the mock filesystem."""
+                return ctx.deps.get_file_system().read_file(file_path, offset, limit)
+            
+            @subagent.tool
+            def write_file_sub(
+                ctx: RunContext[DeepAgentDependencies],
+                file_path: str,
+                content: str
+            ) -> str:
+                """Write content to a file in the mock filesystem."""
+                return ctx.deps.get_file_system().write_file(file_path, content)
+            
+            @subagent.tool
+            def edit_file_sub(
+                ctx: RunContext[DeepAgentDependencies],
+                file_path: str,
+                old_string: str,
+                new_string: str,
+                replace_all: bool = False
+            ) -> str:
+                """Edit a file in the mock filesystem."""
+                return ctx.deps.get_file_system().edit_file(file_path, old_string, new_string, replace_all)
+            
+            @subagent.tool
+            def write_todos_sub(
+                ctx: RunContext[DeepAgentDependencies],
+                todos: List[Todo]
+            ) -> str:
+                """Update the todo list for task management."""
+                return ctx.deps.get_todo_manager().write_todos(todos)
+            
+            # Add dynamic system prompt for this sub-agent
+            def make_subagent_prompt_func(config):
+                def subagent_prompt_func(ctx: RunContext[DeepAgentDependencies]) -> str:
                     now_human = datetime.now().astimezone().strftime("%Y-%m-%d %H:%M %Z")
                     date_prefix = (
                         f"You must treat the current local date/time as: {now_human}. "
                         "Use the most recent, reliable information available.\n\n"
                     )
                     return date_prefix + config.prompt
-                return subagent_prompt
+                return subagent_prompt_func
             
-            subagent = Agent(
-                self.model,
-                deps_type=DeepAgentDependencies,
-                system_prompt=make_subagent_prompt(subagent_config)
-            )
-            
-            # Register tools based on configuration
-            if subagent_config.tools:
-                # Register only specified tools
-                tool_map = {tool.__name__: tool for tool in self.tools}
-                tool_map.update({
-                    'ls_tool': ls_tool,
-                    'read_file_tool': read_file_tool,
-                    'write_file_tool': write_file_tool,
-                    'edit_file_tool': edit_file_tool,
-                    'write_todos_tool': write_todos_tool
-                })
-                
-                for tool_name in subagent_config.tools:
-                    if tool_name in tool_map:
-                        subagent.tool(tool_map[tool_name])
-            else:
-                # Register all tools (default behavior)
-                subagent.tool(ls_tool)
-                subagent.tool(read_file_tool)
-                subagent.tool(write_file_tool)
-                subagent.tool(edit_file_tool)
-                subagent.tool(write_todos_tool)
-                for tool in self.tools:
-                    subagent.tool(tool)
+            subagent.system_prompt(make_subagent_prompt_func(subagent_config))
             
             sub_agents[subagent_config.name] = subagent
         

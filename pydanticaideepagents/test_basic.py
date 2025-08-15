@@ -7,6 +7,18 @@ without running any actual agent logic that would require API keys.
 import sys
 import os
 
+# Load environment variables from parent directory
+try:
+    from dotenv import load_dotenv
+    parent_dir = os.path.dirname(os.path.dirname(__file__))
+    env_path = os.path.join(parent_dir, '.env')
+    load_dotenv(env_path)
+    print(f"✅ Loaded environment variables from {env_path}")
+except ImportError:
+    print("⚠️  python-dotenv not available, environment variables must be set manually")
+except Exception as e:
+    print(f"⚠️  Could not load .env file: {e}")
+
 # Add the src directory to the path
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'src'))
 
