@@ -1,6 +1,9 @@
 import os
 import sys
 import json
+import asyncio
+import traceback
+from pprint import pformat
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -20,8 +23,16 @@ if find_dotenv and load_dotenv:
     except Exception:
         pass
 
-# Import the existing agent definition so we don't duplicate logic
-from examples.research.research_agent import agent  # noqa: E402
+# Import the existing agent definition by file path so we don't duplicate logic
+import importlib.util  # noqa: E402
+
+_research_agent_path = (Path(__file__).resolve().parent / "research_agent.py").as_posix()
+_spec = importlib.util.spec_from_file_location("_research_agent", _research_agent_path)
+if _spec is None or _spec.loader is None:
+    raise RuntimeError(f"Could not load research_agent module from {_research_agent_path}")
+_mod = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(_mod)  # type: ignore[arg-type]
+agent = getattr(_mod, "agent")
 
 
 def _jsonable(obj: Any) -> Any:
@@ -69,10 +80,39 @@ def run_and_dump(question: str) -> Path:
 
     ts = datetime.now().strftime("%Y%m%d_%H%M%S")
 
-    # Invoke the agent to get the final state (messages, files, todos, etc.)
-    result = agent.invoke({
-        "messages": [{"role": "user", "content": question}],
-    })
+    # Stream the agent to capture intermediate states and the final state
+    events_path = outputs_dir / f"{ts}__events.jsonl"
+    last_state: dict[str, Any] | None = None
+
+    async def _astream_collect():
+        nonlocal last_state
+        async for chunk in agent.astream(
+            {"messages": [{"role": "user", "content": question}]},
+            stream_mode="values",
+        ):
+            # Persist each chunk as a JSON line for step-by-step insight
+            try:
+                with events_path.open("a", encoding="utf-8") as ef:
+                    ef.write(json.dumps(_jsonable(chunk), ensure_ascii=False) + "\n")
+            except Exception:
+                pass
+            last_state = chunk
+
+    # Run the async streaming collection
+    try:
+        asyncio.run(_astream_collect())
+    except RuntimeError:
+        # In case an event loop is already running (e.g., in notebooks), fall back
+        loop = asyncio.get_event_loop()
+        loop.run_until_complete(_astream_collect())
+
+    # Use the last streamed state as the result; if none, fallback to single invoke
+    if last_state is None:
+        result = agent.invoke({
+            "messages": [{"role": "user", "content": question}],
+        })
+    else:
+        result = last_state
 
     # Prepare a pretty-printed, JSON-serializable state snapshot
     state_snapshot = {
@@ -91,6 +131,11 @@ def run_and_dump(question: str) -> Path:
     state_path = outputs_dir / f"run_state_{ts}.json"
     with state_path.open("w", encoding="utf-8") as f:
         json.dump(state_snapshot, f, indent=2, ensure_ascii=False)
+
+    # Also write a pretty-printed dict for quick human inspection
+    pretty_path = outputs_dir / f"run_state_{ts}.txt"
+    with pretty_path.open("w", encoding="utf-8") as f:
+        f.write(pformat(state_snapshot, width=100))
 
     # Write any in-memory files to disk with a timestamped prefix
     files = result.get("files") or {}
@@ -136,10 +181,15 @@ def run_and_dump(question: str) -> Path:
 
 
 if __name__ == "__main__":
-    if len(sys.argv) > 1:
-        question = " ".join(sys.argv[1:])
-    else:
-        question = "What is LangGraph?"
+    try:
+        if len(sys.argv) > 1:
+            question = " ".join(sys.argv[1:])
+        else:
+            question = "What is LangGraph?"
 
-    path = run_and_dump(question)
-    print(f"State written to: {path}")
+        path = run_and_dump(question)
+        print(f"State written to: {path}")
+    except Exception as e:
+        # Surface errors for easier debugging
+        traceback.print_exc()
+        sys.exit(1)
