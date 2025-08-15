@@ -51,7 +51,9 @@ def _guess_ts_and_run_id(path: Path) -> str:
 
 def _first_user_content(messages: List[dict]) -> Optional[str]:
     for m in messages:
-        if (m.get("role") or "").lower() == "user":
+        role = (m.get("role") or "").lower()
+        # Some runs serialize the initial human message with role="human"
+        if role in ("user", "human"):
             return m.get("content")
     return None
 
